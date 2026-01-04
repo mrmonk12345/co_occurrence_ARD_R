@@ -41,17 +41,26 @@ tax_matrix <- taxon_df %>% as.matrix()
 OTU  <- otu_table(asv_matrix, taxa_are_rows = TRUE)  # samples are rows
 TAX  <- tax_table(tax_matrix)
 SAM  <- sample_data(meta)
-ps0  <- phyloseq(OTU, TAX, SAM)
+ps_all  <- phyloseq(OTU, TAX, SAM)
+ps0 <- subset_samples(ps_all, treatment == "BjSa")
 ps0  <- prune_samples(sample_sums(ps0) > 0, ps0)
 
 # Decontaminate
 ps1<-ps0 #not doing this yet
-ps2<-ps1
+
 
 # Parameters to tune
 
-# Set your threshold: keep taxa present in ≥5% of samples
-min_preval <- 0.05
+min_depth  <- 0    # minimum library size per sample (example)
+min_total  <- 0       # ASV must have at least X total counts across cohort
+
+
+ps2 <- ps1 %>%
+  prune_samples(sample_sums(.) >= min_depth, .) %>%
+  prune_taxa(taxa_sums(.) >= min_total, .)
+
+
+min_preval <- 0.25 # Set your threshold: keep taxa present in ≥5% of samples
 
 # Extract the OTU/ASV abundance table
 otu <- otu_table(ps2)
@@ -78,10 +87,32 @@ stopifnot(ntaxa(ps2) > 0, nsamples(ps2) > 0)
 cat(sprintf("After prevalence filtering: %d samples, %d taxa\n", nsamples(ps2), ntaxa(ps2)))
 
 
-ntaxa(ps0)
-length(prev)
-head(taxa_names(ps2))
-head(names(prev))
+# SPIEC-EASI
 
+set.seed(1)
 
+# SPIEC-EASI expects taxa as columns and samples as rows; phyloseq-friendly wrapper handles that
+# Parameters to tune:
+nlambda          <- 30           # length of regularization path
+lambda_min_ratio <- 1e-2         # smallest lambda as a fraction of max
+rep_num          <- 50           # stability selection resamples (increase for larger data)
+sel_crit         <- "stars"      # stability criterion; alternatives: "bstars"
+mb_alpha         <- 0.05         # target instability threshold for STARS (default 0.05)
+
+se.mb <- spiec.easi(ps2,
+                    method          = "mb",
+                    sel.criterion   = sel_crit,
+                    pulsar.params   = list(rep.num = rep_num, thresh = mb_alpha),
+                    nlambda         = nlambda,
+                    lambda.min.ratio= lambda_min_ratio,
+                    verbose         = TRUE)
+
+# Extract adjacency and edge weights
+adj  <- getRefit(se.mb)                       # 0/1 adjacency (symmetric)
+beta <- symBeta(getOptBeta(se.mb), mode="maxabs")  # weighted edges (partial associations)
+
+# Build igraph
+g_asv <- adj2igraph(adj, vertex.attr = list(name = taxa_names(ps2)))
+E(g_asv)$weight <- beta[upper.tri(beta)][which(adj[upper.tri(adj)] == 1)]
+cat(sprintf("ASV network: %d nodes, %d edges\n", gorder(g_asv), gsize(g_asv)))
 
